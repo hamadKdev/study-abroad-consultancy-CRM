@@ -1264,10 +1264,6 @@ def delete_application(
     }
 
 
-# =========================================================
-# DOCUMENTS
-# =========================================================
-
 @app.post("/applications/{application_id}/documents")
 def upload_document(
     application_id: str,
@@ -1277,7 +1273,10 @@ def upload_document(
     current_user=Depends(get_current_user)
 ):
 
-    # Check application
+    # =====================================================
+    # 1. CHECK APPLICATION
+    # =====================================================
+
     application_result = (
         supabase
         .table("applications")
@@ -1294,6 +1293,7 @@ def upload_document(
 
     application = application_result.data[0]
 
+    # Student can upload only to own application
     if (
         current_user["role"] == "student"
         and application["student_id"] != current_user["id"]
@@ -1303,7 +1303,43 @@ def upload_document(
             detail="You cannot upload to this application"
         )
 
-    # Check file extension
+    # =====================================================
+    # 2. CHECK PROGRAM DOCUMENT
+    # =====================================================
+
+    program_document_result = (
+        supabase
+        .table("program_documents")
+        .select("*")
+        .eq("id", program_document_id)
+        .execute()
+    )
+
+    if not program_document_result.data:
+        raise HTTPException(
+            status_code=404,
+            detail="Program document not found"
+        )
+
+    program_document = program_document_result.data[0]
+
+    # =====================================================
+    # 3. CHECK DOCUMENT BELONGS TO APPLICATION PROGRAM
+    # =====================================================
+
+    if (
+        program_document["program_id"]
+        != application["program_id"]
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="This document requirement does not belong to the application's program"
+        )
+
+    # =====================================================
+    # 4. CHECK FILE
+    # =====================================================
+
     filename = file.filename or ""
 
     extension = os.path.splitext(
@@ -1322,10 +1358,13 @@ def upload_document(
             detail="Only PDF, JPG and PNG files are allowed"
         )
 
-    # Read file
+    # =====================================================
+    # 5. READ FILE
+    # =====================================================
+
     file_content = file.file.read()
 
-    # Max 5 MB
+    # Maximum 5 MB
     max_size = 5 * 1024 * 1024
 
     if len(file_content) > max_size:
@@ -1334,22 +1373,34 @@ def upload_document(
             detail="File size must be 5 MB or less"
         )
 
-    # File type
+    # =====================================================
+    # 6. FILE TYPE
+    # =====================================================
+
     if extension == ".pdf":
         file_type = "PDF"
+
     elif extension == ".jpg":
         file_type = "JPG"
+
     else:
         file_type = "PNG"
 
-    # Unique file name
+    # =====================================================
+    # 7. UNIQUE FILE NAME
+    # =====================================================
+
     unique_filename = (
         f"{application_id}/"
         f"{uuid4()}_{filename}"
     )
 
-    # Upload to Supabase Storage
+    # =====================================================
+    # 8. UPLOAD TO SUPABASE STORAGE
+    # =====================================================
+
     try:
+
         supabase.storage.from_(
             STORAGE_BUCKET
         ).upload(
@@ -1364,12 +1415,16 @@ def upload_document(
         )
 
     except Exception as e:
+
         raise HTTPException(
             status_code=500,
             detail=f"File upload failed: {str(e)}"
         )
 
-    # Insert document record
+    # =====================================================
+    # 9. INSERT DOCUMENT INTO DATABASE
+    # =====================================================
+
     document_data = {
         "application_id": application_id,
         "program_document_id": program_document_id,
@@ -1379,14 +1434,41 @@ def upload_document(
         "status": "Pending"
     }
 
-    result = (
-        supabase
-        .table("documents")
-        .insert(document_data)
-        .execute()
-    )
+    try:
+
+        result = (
+            supabase
+            .table("documents")
+            .insert(document_data)
+            .execute()
+        )
+
+    except Exception as e:
+
+        # If database insert fails,
+        # remove uploaded file from storage
+
+        try:
+
+            supabase.storage.from_(
+                STORAGE_BUCKET
+            ).remove([
+                unique_filename
+            ])
+
+        except Exception as storage_error:
+
+            print(
+                f"Storage cleanup warning: {storage_error}"
+            )
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Document database insert failed: {str(e)}"
+        )
 
     if not result.data:
+
         raise HTTPException(
             status_code=500,
             detail="Document record creation failed"
@@ -1394,24 +1476,42 @@ def upload_document(
 
     created_document = result.data[0]
 
-    # n8n automation
+    # =====================================================
+    # 10. SEND DATA TO n8n
+    # =====================================================
+
     background_tasks.add_task(
         send_n8n_webhook,
         "document_uploaded",
         {
             "document": created_document,
+
             "application_id": application_id,
+
             "student_id": application["student_id"],
+
             "program_document_id": program_document_id,
+
+            "file_name": filename,
+
             "file_type": file_type,
-            "file_name": filename
+
+            "document_status": "Pending"
         }
     )
 
+    # =====================================================
+    # 11. RESPONSE
+    # =====================================================
+
     return {
         "message": "Document uploaded successfully",
+
         "document": created_document,
-        "file_type": file_type
+
+        "file_type": file_type,
+
+        "n8n_event": "document_uploaded"
     }
 
 
