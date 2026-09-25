@@ -1,0 +1,6 @@
+{
+  "name": "GlobalEdu Study Abroad CRM",
+  "description": "Comprehensive Study Abroad Consultancy CRM for managing students, leads, counseling, university admissions, applications, and document verification.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
